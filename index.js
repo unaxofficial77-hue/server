@@ -2,11 +2,10 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
-const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 const OTP_EXPIRY_TIME = 5 * 60 * 1000;
 const SESSION_EXPIRY_TIME = 10 * 60 * 1000;
@@ -17,16 +16,8 @@ app.use(express.json());
 const otpStore = new Map();
 const sessionStore = new Map();
 
-const transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD
-    }
-});
-
 app.get("/", (req, res) => {
-    res.send("OTP server is running");
+    res.send("OTP server is running with Resend");
 });
 
 app.post("/send-otp", async (req, res) => {
@@ -40,6 +31,12 @@ app.post("/send-otp", async (req, res) => {
             });
         }
 
+        if (!process.env.RESEND_API_KEY) {
+            throw new Error(
+                "RESEND_API_KEY is missing"
+            );
+        }
+
         const normalizedEmail =
             email.trim().toLowerCase();
 
@@ -47,21 +44,49 @@ app.post("/send-otp", async (req, res) => {
             100000 + Math.random() * 900000
         ).toString();
 
+        const emailResponse = await fetch(
+            "https://api.resend.com/emails",
+            {
+                method: "POST",
+                headers: {
+                    "Authorization":
+                        `Bearer ${process.env.RESEND_API_KEY}`,
+                    "Content-Type":
+                        "application/json"
+                },
+                body: JSON.stringify({
+                    from:
+                        "Autofill OTP <onboarding@resend.dev>",
+                    to: [normalizedEmail],
+                    subject:
+                        "Your Autofill Extension OTP",
+                    text:
+                        `Your OTP is ${otp}. ` +
+                        `It will expire in 5 minutes.`
+                })
+            }
+        );
+
+        const emailResult =
+            await emailResponse.json();
+
+        if (!emailResponse.ok) {
+            console.error(
+                "Resend API error:",
+                emailResult
+            );
+
+            throw new Error(
+                emailResult.message ||
+                "Resend could not send the email"
+            );
+        }
+
         otpStore.set(normalizedEmail, {
             otp,
             expiresAt:
                 Date.now() + OTP_EXPIRY_TIME,
             attempts: 0
-        });
-
-        await transporter.sendMail({
-            from: process.env.GMAIL_USER,
-            to: normalizedEmail,
-            subject:
-                "Your Autofill Extension OTP",
-            text:
-                `Your OTP is ${otp}. ` +
-                `It will expire in 5 minutes.`
         });
 
         res.json({
@@ -76,7 +101,9 @@ app.post("/send-otp", async (req, res) => {
 
         res.status(500).json({
             success: false,
-            message: "Could not send OTP"
+            message:
+                error.message ||
+                "Could not send OTP"
         });
     }
 });
@@ -135,10 +162,9 @@ app.post("/verify-otp", (req, res) => {
 
     otpStore.delete(normalizedEmail);
 
-    const token =
-        crypto
-            .randomBytes(32)
-            .toString("hex");
+    const token = crypto
+        .randomBytes(32)
+        .toString("hex");
 
     sessionStore.set(token, {
         email: normalizedEmail,
@@ -204,6 +230,6 @@ setInterval(() => {
 
 app.listen(PORT, () => {
     console.log(
-        `Server running on http://localhost:${PORT}`
+        `Server running on port ${PORT}`
     );
 });
